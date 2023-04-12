@@ -2,6 +2,8 @@
 
 Use fuzzy search in the current buffer in the same way as you would `/?`, no need for telescope or some gui. Uses the commnd-preview feature.
 
+[Screencast from 04-12-2023 10:26:32 PM.webm](https://user-images.githubusercontent.com/5981889/231489301-29419b0e-ed3e-4f98-a8e0-a6ee02f314e9.webm)
+
 Install it (lazy.nvim):
 
 ```lua
