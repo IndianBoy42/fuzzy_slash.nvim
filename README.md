@@ -51,3 +51,10 @@ Not much configuration for not much functionality. Only need to pass the keys yo
     cmdline_addchar = "<c-t>",
 }
 ```
+
+## TODOs
+
+- [x] Do the search
+- [ ] Multi window?
+- [ ] Notify when there is only one word matched
+- [ ] Quickfix/loclist integration
