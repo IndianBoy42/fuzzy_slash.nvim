@@ -8,11 +8,15 @@ Install it (lazy.nvim):
 
 ```lua
 {
-    "IndianBoy42/fuzzy_slash.nvim",
-    dependencies = { "tzachar/fuzzy.nvim", }
-    -- Configure and lazy load as you want
+  "IndianBoy42/fuzzy_slash.nvim",
+  dependencies = {
+    { "tzachar/fuzzy.nvim", dependencies = { { "nvim-telescope/telescope-fzf-native.nvim", build = "make" } } },
+  },
+  -- Configure and lazy load as you want
 }
 ```
+
+See [fuzzy.nvim](https://github.com/tzachar/fuzzy.nvim)'s README.md to make sure you get fzf/fzy installed correctly
 
 Try it:
 
@@ -35,6 +39,8 @@ Not much configuration for not much functionality. Only need to pass the keys yo
     hl_group = "Search",
     cursor_hl = "CurSearch",
     word_pattern = "[%w%-_]+",
+    -- ".+" will match the whole line and thus search by lines
+    -- "%S+" will match strings of non whitespace, like W
     register_nN_repeat = function(nN)
         -- called after a fuzzy search with a tuple of functions that are effectively `n, N`
         local n, N = unpack(nN)
@@ -60,3 +66,5 @@ Not much configuration for not much functionality. Only need to pass the keys yo
 - [ ] Multi window?
 - [ ] Notify when there is only one word matched
 - [ ] Quickfix/loclist integration
+- [ ] Bugginess in next/prev? (maybe customizable sorting)
+- [ ] Treesitter and LSP?
