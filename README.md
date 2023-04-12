@@ -39,13 +39,12 @@ Not much configuration for not much functionality. Only need to pass the keys yo
     hl_group = "Search",
     cursor_hl = "CurSearch",
     word_pattern = "[%w%-_]+",
-    -- ".+" will match the whole line and thus search by lines
-    -- "%S+" will match strings of non whitespace, like W
+    jump_to_matched_char = true,
     register_nN_repeat = function(nN)
-        -- called after a fuzzy search with a tuple of functions that are effectively `n, N`
-        local n, N = unpack(nN)
-        -- Dynamically map this to n, N
-        -- Left as an exercise to the reader
+    -- called after a fuzzy search with a tuple of functions that are effectively `n, N`
+    local n, N = unpack(nN)
+    -- Dynamically map this to n, N
+    -- Left as an exercise to the reader
     end,
     -- Wanna rename the commands for some reason?, change the rhs
     Fz = "Fz",
@@ -57,7 +56,31 @@ Not much configuration for not much functionality. Only need to pass the keys yo
     cmdline_next = "<c-g>",
     cmdline_prev = "<c-t>",
     cmdline_addchar = "<c-t>",
+    -- Target generator: fn() -> list of {text, row, col, endcol}
+    -- Text doesn't actually have to be text in buffer, simply what you want to run the fuzzy matching on
+    -- You can add any other data it will be passed through, just dont use (score, index, positions)
+    generator = nil,
+    -- Match sorter: fn(a, b) -> a < b
+    -- Matches are targets augmented with fzf data: {text, row, col, endcol, score=score, index=index, positions=positions}
+    -- score and positions are from fuzzy_nvim (fzf, fzy), index is the index in the original target list
+    sorter = nil,
+    -- Execute the jump to the match: fn(match)
+    -- Customize where inside the match you jump to
+    jump_to_match = nil,
+    -- Do the highlighting: fn(match, ns, hl)
+    -- MUST use ns for any extmarks
+    highlight_match = nil,
 }
+```
+
+# API
+
+PRELIMINARY: Make your own commands with custom target generators and sorters, please tell me what interesting things you make, or what you want to make
+
+```lua
+-- Any options/keys in the opts table here will override the defaults for this custom command
+-- Thus you can customize any aspect of the behaviour, especially target generation
+vim.api.nvim_create_user_command("MyFz", M.make_command(opts))
 ```
 
 ## TODOs
@@ -68,3 +91,4 @@ Not much configuration for not much functionality. Only need to pass the keys yo
 - [ ] Quickfix/loclist integration
 - [ ] Bugginess in next/prev? (maybe customizable sorting)
 - [ ] Treesitter and LSP?
+  - [ ] Modularize the code for different target generators

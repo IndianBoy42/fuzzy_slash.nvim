@@ -3,6 +3,7 @@ local M = {
 		hl_group = "Search",
 		cursor_hl = "CurSearch",
 		word_pattern = "[%w%-_]+",
+		jump_to_matched_char = true,
 		register_nN_repeat = function(nN)
 			-- called after a fuzzy search with a tuple of functions that are effectively `n, N`
 			local n, N = unpack(nN)
@@ -19,9 +20,26 @@ local M = {
 		cmdline_next = "<c-g>",
 		cmdline_prev = "<c-t>",
 		cmdline_addchar = "<c-t>",
+		-- Target generator: fn() -> list of {text, row, col, endcol}
+		-- Text doesn't actually have to be text in buffer, simply what you want to run the fuzzy matching on
+		-- You can add any other data it will be passed through, just dont use (score, index, positions)
+		generator = nil,
+		-- Match sorter: fn(a, b) -> a < b
+		-- Matches are targets augmented with fzf data: {text, row, col, endcol, score=score, index=index, positions=positions}
+		-- score and positions are from fuzzy_nvim (fzf, fzy), index is the index in the original target list
+		sorter = nil,
+		-- Execute the jump to the match: fn(match)
+		-- Customize where inside the match you jump to
+		jump_to_match = nil,
+		-- Do the highlighting: fn(match, ns, hl)
+		-- MUST use ns for any extmarks
+		highlight_match = nil,
 	},
 }
-local meta_M = {}
+local meta_M = { __index = require("fuzzy_slash.utils") }
+M = setmetatable(M, meta_M)
+
+local hlsearch_ns = vim.api.nvim_create_namespace("fuzzy_search_hlsearch")
 
 local feedkeys = vim.api.nvim_feedkeys
 local termcodes = vim.api.nvim_replace_termcodes
@@ -29,59 +47,12 @@ local function t(k)
 	return termcodes(k, true, true, true)
 end
 
-local function minmax(list)
-	if #list == 0 then
-		error("Zero length table to minmax")
-	end
-
-	local min = list[1]
-	local max = list[1]
-	for _, v in ipairs(list) do
-		min = math.min(min, v)
-		max = math.max(max, v)
-	end
-	return min, max
-end
-local get_matches_on = function(pat, lines, row_start, matches)
-	matches = matches or {}
-	local m = require("fuzzy_nvim")
-
-	local words = {}
-	local i = 1
-	local col = 0
-	for row, line in ipairs(lines) do
-		while #line > 0 do
-			local start, fin = line:find(M.opts.word_pattern)
-			if start then
-				words[i] = { line:sub(start, fin), row + row_start, col + start - 1, col + fin }
-				col = col + fin
-				line = line:sub(fin + 1)
-				i = i + 1
-			else
-				break
-			end
-		end
-		col = 0
-	end
-
-	local matches_len = #matches
-	local filtered = m:filter(pat, words, M.opts.case_mode)
-	for _, result in ipairs(filtered) do
-		local word, positions, score, index = unpack(result)
-		-- local min, max = minmax(positions)
-		word.positions = positions
-		word.score = score
-		word.index = index + matches_len
-		table.insert(matches, word)
-	end
-	return matches
-end
 local get_match_idx = function(matches, cursor, backward)
 	local cursorline = cursor[1] - 1
 	local idx = 1
 	local s, e, j = 1, #matches, 1
 	if backward then
-		s, e, j = #matches, 1, -1
+		-- TODO:
 	end
 	for i = s, e, j do
 		local match = matches[i]
@@ -93,18 +64,24 @@ local get_match_idx = function(matches, cursor, backward)
 	end
 	return idx
 end
-local get_matches = function(pat)
-	local bufnr = vim.api.nvim_get_current_buf()
+local get_matches = function(pat, fs_opts)
 	local winnr = vim.api.nvim_get_current_win()
-	local cursor = vim.api.nvim_win_get_cursor(vim.api.nvim_get_current_win())
-	local cursorline = cursor[1] - 1
-	local after_lines = vim.api.nvim_buf_get_lines(bufnr, cursorline, -1, false)
-	local before_lines = vim.api.nvim_buf_get_lines(bufnr, 0, cursorline, false)
+	local cursor = vim.api.nvim_win_get_cursor(winnr)
 
-	local matches = get_matches_on(pat, after_lines, cursorline)
-	matches = get_matches_on(pat, before_lines, 0, matches)
+	local words = fs_opts.generator(fs_opts)
+
+	local matches = {}
+	local filtered = require("fuzzy_nvim"):filter(pat, words, fs_opts.case_mode)
+	for _, result in ipairs(filtered) do
+		local word, positions, score, index = unpack(result)
+		-- local min, max = minmax(positions)
+		word.positions = positions
+		word.score = score
+		word.index = index
+		table.insert(matches, word)
+	end
 	table.sort(matches, function(a, b)
-		return a.index < b.index
+		return fs_opts.sorter(a, b, fs_opts)
 	end)
 
 	local idx = get_match_idx(matches, cursor)
@@ -115,19 +92,11 @@ end
 local matches = {}
 local match_index = 0
 
-local function preview_match(match, ns, hl)
-	local word, line, col, endcol = unpack(match)
-	local start, fin = minmax(match.positions)
-	if ns then
-		vim.api.nvim_buf_set_extmark(0, ns, line - 1, col + start - 1, { end_col = endcol, hl_group = hl })
-	end
-	return { line, col + start - 1 }
-end
-local function preview_matches(ns)
+local function highlight_matches(ns, fs_opts)
 	for i, match in ipairs(matches) do
-		local cursor = preview_match(match, ns, i == match_index and M.opts.cursor_hl or M.opts.hl_group)
+		local cursor = M.highlight_match(match, ns, i == match_index and fs_opts.cursor_hl or fs_opts.hl_group)
 		if i == match_index then
-			vim.api.nvim_win_set_cursor(0, cursor)
+			fs_opts.jump_to_match(match, fs_opts)
 		end
 	end
 end
@@ -142,7 +111,7 @@ local function incr_match_index(i)
 	end
 end
 
-local function convert_to_regex(dont_search)
+local function convert_to_regex()
 	local set = {}
 	for _, match in ipairs(matches) do
 		local word, line, col, endcol = unpack(match)
@@ -154,7 +123,7 @@ local function convert_to_regex(dont_search)
 	vim.fn.setreg("/", pat)
 	-- FIXME: i have no idea
 	feedkeys(t("//<cr>"), "m", false)
-	mappings.register_nN_repeat()
+	-- mappings.register_nN_repeat()
 	-- end
 	-- return pat
 end
@@ -163,95 +132,109 @@ local on_key_ns
 local last_args
 local last_last_args
 local last_match_index
-local fuzzy_preview = function(args, ns, buf)
-	if not vim.opt_local.incsearch:get() then
-		return
+local fuzzy_preview = function(fs_opts)
+	return function(args, ns, buf)
+		if not vim.opt_local.incsearch:get() then
+			return
+		end
+		args.args = args.args:gsub(t("[" .. fs_opts.cmdline_next .. fs_opts.cmdline_prev .. "]"), "")
+
+		if args.args ~= last_args then
+			vim.cmd.nohlsearch()
+			matches, match_index = get_matches(args.args, fs_opts)
+
+			on_key_ns = vim.on_key(function(k)
+				if vim.api.nvim_get_mode().mode ~= "c" then
+				end
+				-- This is so hacky...
+				if k == t("<C-g>") then
+					incr_match_index(1)
+					feedkeys(t("<bs>"), "m", false)
+				elseif k == t("<C-t>") then
+					incr_match_index(-1)
+					feedkeys(t("<bs>"), "m", false)
+				else
+				end
+			end, on_key_ns)
+			local augrp = vim.api.nvim_create_augroup("fuzzy_search_cmdline_mappings", {})
+			vim.api.nvim_create_autocmd("CmdlineLeave", {
+				group = augrp,
+				pattern = "*",
+				once = true,
+				callback = function()
+					last_last_args = last_args
+					last_args = ""
+					vim.on_key(nil, on_key_ns)
+					on_key_ns = nil
+					-- vim.keymap.del("c", "<C-g>", {})
+					-- vim.keymap.del("c", "<C-t>", {})
+					-- TODO: more robust cleanup
+				end,
+			})
+		end
+		last_args = args.args
+
+		highlight_matches(ns, fs_opts)
+		-- TODO: render in split buf
+
+		return 1
 	end
-	args.args = args.args:gsub(t("[" .. M.opts.cmdline_next .. M.opts.cmdline_prev .. "]"), "")
-
-	if args.args ~= last_args then
-		vim.cmd.nohlsearch()
-		matches, match_index = get_matches(args.args)
-
-		on_key_ns = vim.on_key(function(k)
-			if vim.api.nvim_get_mode().mode ~= "c" then
-			end
-			-- This is so hacky...
-			if k == t("<C-g>") then
-				incr_match_index(1)
-				feedkeys(t("<bs>"), "m", false)
-			elseif k == t("<C-t>") then
-				incr_match_index(-1)
-				feedkeys(t("<bs>"), "m", false)
-			else
-			end
-		end, on_key_ns)
-		local augrp = vim.api.nvim_create_augroup("fuzzy_search_cmdline_mappings", {})
-		vim.api.nvim_create_autocmd("CmdlineLeave", {
-			group = augrp,
-			pattern = "*",
-			once = true,
-			callback = function()
-				last_last_args = last_args
-				last_args = ""
-				vim.on_key(nil, on_key_ns)
-				on_key_ns = nil
-				-- vim.keymap.del("c", "<C-g>", {})
-				-- vim.keymap.del("c", "<C-t>", {})
-				-- TODO: more robust cleanup
-			end,
-		})
-	end
-	last_args = args.args
-
-	preview_matches(ns)
-	-- TODO: render in split buf
-
-	return 1
 end
 
-local hlsearch_ns = vim.api.nvim_create_namespace("fuzzy_search_hlsearch")
+local last_finisher
+local fuzzy_finish = function(fs_opts)
+	local finisher
+	finisher = function(args)
+		if (not matches or #matches == 0 or args.args ~= last_last_args) and args.args and #args.args > 0 then
+			matches, match_index = get_matches(args.args, fs_opts)
+		end
+		if #matches == 0 then
+			vim.notify("no matches", vim.log.levels.WARN)
+			return
+		end
+		if match_index == 0 then
+			match_index = get_match_idx(matches, vim.api.nvim_win_get_cursor(0))
+		end
 
-local fuzzy_finish = function(args, bwd)
-	if (not matches or #matches == 0) and args.args and #args.args > 0 then
-		matches, match_index = get_matches(args.args)
-	end
-	if args.args and #args.args > 0 and args.args ~= last_last_args then
-		matches, match_index = get_matches(args.args)
-	end
-	if #matches == 0 then
-		vim.notify("no matches", vim.log.levels.WARN)
-		return
-	end
-	if match_index == 0 then
-		match_index = get_match_idx(matches, vim.api.nvim_win_get_cursor(0), bwd)
-	end
+		local match = matches[match_index]
+		fs_opts.jump_to_match(match, fs_opts)
 
-	local match = matches[match_index]
-	local word, line, col, endcol = unpack(match)
-	local start, fin = minmax(match.positions)
-	local cursor = { line, col + start - 1 }
-	vim.api.nvim_win_set_cursor(0, cursor)
+		-- TODO: hlsearch
+		if vim.opt_local.hlsearch:get() then
+			vim.api.nvim_buf_clear_namespace(0, hlsearch_ns, 0, -1)
+			highlight_matches(hlsearch_ns, fs_opts)
+		end
+		last_match_index = match_index
+		match_index = 0
 
-	-- TODO: hlsearch
-	if vim.opt_local.hlsearch:get() then
-		vim.api.nvim_buf_clear_namespace(0, hlsearch_ns, 0, -1)
-		preview_matches(hlsearch_ns)
+		-- TODO: repeatable, or just loclist
+		fs_opts.register_nN_repeat({ vim.cmd.FzNext, vim.cmd.FzPrev })
+		last_finisher = finisher
 	end
-	last_match_index = match_index
-	match_index = 0
-
-	-- TODO: repeatable, or just loclist
-	M.opts.register_nN_repeat({ vim.cmd.FzNext, vim.cmd.FzPrev })
+	return finisher
 end
+
+M.make_command = function(fs_opts)
+	fs_opts = fs_opts and setmetatable(fs_opts, { __index = M.opts }) or M.opts
+	return fuzzy_finish(fs_opts), {
+		nargs = "*",
+		preview = fuzzy_preview(fs_opts),
+	}
+end
+
+M.opts.generator = M.get_all_words
+M.opts.jump_to_match = M.jump_to_match
+M.opts.sorter = function(a, b)
+	return a.index < b.index
+end
+M.opts.highlight_match = M.highlight_match
 
 M.setup = function(opts)
-	M.opts = setmetatable(opts, { __index = M.opts })
+	if opts then
+		M.opts = setmetatable(opts, { __index = M.opts })
+	end
 
-	vim.api.nvim_create_user_command(M.opts.Fz, fuzzy_finish, {
-		nargs = "*",
-		preview = fuzzy_preview,
-	})
+	vim.api.nvim_create_user_command(M.opts.Fz, M.make_command())
 	vim.api.nvim_create_autocmd("OptionSet", {
 		pattern = "hlsearch",
 		callback = function()
@@ -263,12 +246,12 @@ M.setup = function(opts)
 	vim.api.nvim_create_user_command(M.opts.FzNext, function(args)
 		match_index = last_match_index
 		incr_match_index(1)
-		fuzzy_finish(args)
+		last_finisher(args)
 	end, {})
 	vim.api.nvim_create_user_command(M.opts.FzPrev, function(args)
 		match_index = last_match_index
 		incr_match_index(-1)
-		fuzzy_finish(args)
+		last_finisher(args)
 	end, {})
 
 	vim.api.nvim_create_user_command(M.opts.FzPattern, convert_to_regex, {})
@@ -279,4 +262,4 @@ M.setup = function(opts)
 	end, {})
 end
 
-return setmetatable(M, meta_M)
+return M
