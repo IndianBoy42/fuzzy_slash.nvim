@@ -10,13 +10,13 @@ Install it (lazy.nvim):
 {
   "IndianBoy42/fuzzy_slash.nvim",
   dependencies = {
-    { "tzachar/fuzzy.nvim", dependencies = { { "nvim-telescope/telescope-fzf-native.nvim", build = "make" } } },
+    { "IndianBoy42/fuzzy.nvim", dependencies = { { "nvim-telescope/telescope-fzf-native.nvim", build = "make" } } },
   },
   -- Configure and lazy load as you want
 }
 ```
 
-See [fuzzy.nvim](https://github.com/tzachar/fuzzy.nvim)'s README.md to make sure you get fzf/fzy installed correctly
+See [fuzzy.nvim](https://github.com/IndianBoy42/fuzzy.nvim)'s README.md to make sure you get fzf/fzy installed correctly. NOTE: for now I am using a fork of fuzzy.nvim with some minor additional functionality, I hope to have it upstreamed in one form or another soon.
 
 Try it:
 
