@@ -40,7 +40,7 @@ function M.highlight_match(match, ns, hl, fs_opts)
 end
 
 M.filtered_words = function(filter)
-	return function(lines, words, row_start, fs_opts)
+	return function(lines, words, row_start, fs_opts, args)
 		row_start = row_start or 0
 		local i = #words
 		local col = 0
@@ -84,12 +84,28 @@ M.by_scanning_lines = function(get)
 		end
 
 		local words = {}
-		words = get(vim.api.nvim_buf_get_lines(bufnr, cursorline, e, false), words, cursorline, fs_opts)
-		words = get(vim.api.nvim_buf_get_lines(bufnr, s, cursorline, false), words, s, fs_opts)
+		words = get(vim.api.nvim_buf_get_lines(bufnr, cursorline, e, false), words, cursorline, fs_opts, args)
+		words = get(vim.api.nvim_buf_get_lines(bufnr, s, cursorline, false), words, s, fs_opts, args)
+		utils.tmp = words
 		return words
 	end
 end
 M.get_all_words = M.by_scanning_lines(M.get_words)
+M.get_all_words_or_lines = function(args, fs_opts)
+	local scan
+	if args.args:match("^" .. fs_opts.word_pattern .. "$") then
+		scan = M.by_scanning_lines(M.get_words)
+	else
+		scan = M.by_scanning_lines(function(lines, words, row_start)
+			local j = #words
+			for i, line in ipairs(lines) do
+				words[i + j] = { line, i + row_start, 1, #line }
+			end
+			return words
+		end)
+	end
+	return scan(args, fs_opts)
+end
 
 M.get_ts_locals = function()
 	local bufnr = vim.api.nvim_get_current_buf()

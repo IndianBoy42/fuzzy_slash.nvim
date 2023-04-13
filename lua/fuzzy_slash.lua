@@ -225,7 +225,7 @@ M.make_command = function(fs_opts)
 	}
 end
 
-M.opts.generator = M.get_all_words
+M.opts.generator = M.get_all_words_or_lines
 M.opts.jump_to_match = M.jump_to_match
 M.opts.sorter = function(a, b)
 	return a.index < b.index
