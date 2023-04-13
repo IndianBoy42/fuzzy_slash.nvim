@@ -27,11 +27,15 @@ function M.jump_to_match(match, fs_opts)
 	vim.api.nvim_win_set_cursor(0, cursor)
 end
 
-function M.highlight_match(match, ns, hl)
+function M.highlight_match(match, ns, hl, fs_opts)
 	local word, line, col, endcol = unpack(match)
-	local start, fin = minmax(match.positions)
 	if ns then
-		vim.api.nvim_buf_set_extmark(0, ns, line - 1, col + start - 1, { end_col = col + fin - 1, hl_group = hl })
+		if fs_opts.highlight_matched_chars then
+			local start, fin = minmax(match.positions)
+			vim.api.nvim_buf_set_extmark(0, ns, line - 1, col + start - 1, { end_col = col + fin, hl_group = hl })
+		else
+			vim.api.nvim_buf_set_extmark(0, ns, line - 1, col, { end_col = endcol, hl_group = hl })
+		end
 	end
 end
 
@@ -67,18 +71,44 @@ M.filtered_words = function(filter)
 end
 M.get_words = M.filtered_words(nil)
 M.by_scanning_lines = function(get)
-	return function(fs_opts)
+	return function(args, fs_opts)
 		local bufnr = vim.api.nvim_get_current_buf()
 		local winnr = vim.api.nvim_get_current_win()
 		local cursor = vim.api.nvim_win_get_cursor(winnr)
 		local cursorline = cursor[1] - 1
 
+		local s, e = 0, -1
+		if args.range == 2 then
+			s = args.line1
+			e = args.line2
+		end
+
 		local words = {}
-		words = get(vim.api.nvim_buf_get_lines(bufnr, cursorline, -1, false), words, cursorline, fs_opts)
-		words = get(vim.api.nvim_buf_get_lines(bufnr, 0, cursorline, false), words, 0, fs_opts)
+		words = get(vim.api.nvim_buf_get_lines(bufnr, cursorline, e, false), words, cursorline, fs_opts)
+		words = get(vim.api.nvim_buf_get_lines(bufnr, s, cursorline, false), words, s, fs_opts)
 		return words
 	end
 end
 M.get_all_words = M.by_scanning_lines(M.get_words)
+
+M.get_ts_locals = function()
+	local bufnr = vim.api.nvim_get_current_buf()
+	local locals = require("nvim-treesitter.locals")
+	local local_nodes = locals.get_locals(bufnr)
+	local words = {}
+	local gnt = vim.treesitter.get_node_text
+	local gnr = vim.treesitter.get_node_range
+	for i, local_node in ipairs(local_nodes) do
+		local n = (local_node.definition and local_node.definition.node)
+			or (local_node.reference and local_node.reference.node)
+		local sr, sc, er, ec = gnr(n)
+		if sr ~= er then
+			er = sr
+			ec = #vim.api.nvim_buf_get_lines(bufnr, sr, er, false)[1]
+		end
+		words[i] = { gnt(n, bufnr, {}), sr, sc, ec }
+	end
+	return words
+end
 
 return setmetatable(M, meta_M)

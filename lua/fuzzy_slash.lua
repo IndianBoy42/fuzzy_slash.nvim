@@ -4,6 +4,7 @@ local M = {
 		cursor_hl = "CurSearch",
 		word_pattern = "[%w%-_]+",
 		jump_to_matched_char = true,
+		highlight_matched_chars = true,
 		register_nN_repeat = function(nN)
 			-- called after a fuzzy search with a tuple of functions that are effectively `n, N`
 			local n, N = unpack(nN)
@@ -20,18 +21,19 @@ local M = {
 		cmdline_next = "<c-g>",
 		cmdline_prev = "<c-t>",
 		cmdline_addchar = "<c-t>",
-		-- Target generator: fn() -> list of {text, row, col, endcol}
+		-- Target generator: fn(args, opts) -> list of {text, row, col, endcol}
 		-- Text doesn't actually have to be text in buffer, simply what you want to run the fuzzy matching on
+		-- (actually jump_to_matched_char and highlight_matched_char wont work then)
 		-- You can add any other data it will be passed through, just dont use (score, index, positions)
 		generator = nil,
-		-- Match sorter: fn(a, b) -> a < b
+		-- Match sorter: fn(a, b, opts) -> a < b
 		-- Matches are targets augmented with fzf data: {text, row, col, endcol, score=score, index=index, positions=positions}
 		-- score and positions are from fuzzy_nvim (fzf, fzy), index is the index in the original target list
 		sorter = nil,
-		-- Execute the jump to the match: fn(match)
+		-- Execute the jump to the match: fn(match, opts)
 		-- Customize where inside the match you jump to
 		jump_to_match = nil,
-		-- Do the highlighting: fn(match, ns, hl)
+		-- Do the highlighting: fn(match, ns, hl, opts)
 		-- MUST use ns for any extmarks
 		highlight_match = nil,
 	},
@@ -56,7 +58,7 @@ local get_match_idx = function(matches, cursor, backward)
 	end
 	for i = s, e, j do
 		local match = matches[i]
-		local word, line, col, endcol = unpack(match)
+		local word, line, col = unpack(match)
 		if (line - 1) > cursorline or ((line - 1) == cursorline and col > cursor[2]) then
 			idx = i
 			break
@@ -64,11 +66,12 @@ local get_match_idx = function(matches, cursor, backward)
 	end
 	return idx
 end
-local get_matches = function(pat, fs_opts)
+local get_matches = function(args, fs_opts)
+	local pat = args.args
 	local winnr = vim.api.nvim_get_current_win()
 	local cursor = vim.api.nvim_win_get_cursor(winnr)
 
-	local words = fs_opts.generator(fs_opts)
+	local words = fs_opts.generator(args, fs_opts)
 
 	local matches = {}
 	local filtered = require("fuzzy_nvim"):filter(pat, words, fs_opts.case_mode)
@@ -94,7 +97,8 @@ local match_index = 0
 
 local function highlight_matches(ns, fs_opts)
 	for i, match in ipairs(matches) do
-		local cursor = M.highlight_match(match, ns, i == match_index and fs_opts.cursor_hl or fs_opts.hl_group)
+		local cursor =
+			fs_opts.highlight_match(match, ns, i == match_index and fs_opts.cursor_hl or fs_opts.hl_group, fs_opts)
 		if i == match_index then
 			fs_opts.jump_to_match(match, fs_opts)
 		end
@@ -114,7 +118,7 @@ end
 local function convert_to_regex()
 	local set = {}
 	for _, match in ipairs(matches) do
-		local word, line, col, endcol = unpack(match)
+		local word = match[1]
 		set[word] = true
 	end
 	local words = vim.tbl_keys(set)
@@ -141,7 +145,7 @@ local fuzzy_preview = function(fs_opts)
 
 		if args.args ~= last_args then
 			vim.cmd.nohlsearch()
-			matches, match_index = get_matches(args.args, fs_opts)
+			matches, match_index = get_matches(args, fs_opts)
 
 			on_key_ns = vim.on_key(function(k)
 				if vim.api.nvim_get_mode().mode ~= "c" then
@@ -166,8 +170,6 @@ local fuzzy_preview = function(fs_opts)
 					last_args = ""
 					vim.on_key(nil, on_key_ns)
 					on_key_ns = nil
-					-- vim.keymap.del("c", "<C-g>", {})
-					-- vim.keymap.del("c", "<C-t>", {})
 					-- TODO: more robust cleanup
 				end,
 			})
@@ -186,7 +188,7 @@ local fuzzy_finish = function(fs_opts)
 	local finisher
 	finisher = function(args)
 		if (not matches or #matches == 0 or args.args ~= last_last_args) and args.args and #args.args > 0 then
-			matches, match_index = get_matches(args.args, fs_opts)
+			matches, match_index = get_matches(args, fs_opts)
 		end
 		if #matches == 0 then
 			vim.notify("no matches", vim.log.levels.WARN)
@@ -219,6 +221,7 @@ M.make_command = function(fs_opts)
 	return fuzzy_finish(fs_opts), {
 		nargs = "*",
 		preview = fuzzy_preview(fs_opts),
+		range = "%",
 	}
 end
 
@@ -243,6 +246,7 @@ M.setup = function(opts)
 	})
 	-- Repeat
 	-- TODO: preview the location and allow c-g, c-t
+	-- TODO: this is not exactly the same as /? nN
 	vim.api.nvim_create_user_command(M.opts.FzNext, function(args)
 		match_index = last_match_index
 		incr_match_index(1)

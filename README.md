@@ -41,10 +41,10 @@ Not much configuration for not much functionality. Only need to pass the keys yo
     word_pattern = "[%w%-_]+",
     jump_to_matched_char = true,
     register_nN_repeat = function(nN)
-    -- called after a fuzzy search with a tuple of functions that are effectively `n, N`
-    local n, N = unpack(nN)
-    -- Dynamically map this to n, N
-    -- Left as an exercise to the reader
+        -- called after a fuzzy search with a tuple of functions that are effectively `n, N`
+        local n, N = unpack(nN)
+        -- Dynamically map this to n, N
+        -- Left as an exercise to the reader
     end,
     -- Wanna rename the commands for some reason?, change the rhs
     Fz = "Fz",
