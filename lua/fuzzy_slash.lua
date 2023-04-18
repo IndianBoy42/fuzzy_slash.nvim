@@ -17,6 +17,9 @@ local M = {
     FzPrev = "FzPrev",
     FzPattern = "FzPattern",
     FzClear = "FzClear", -- Similar to :nohlsearch
+    FzTsLocals = "FzTsLocals",
+    FzDiags = "FzDiags",
+    FzTsObjects = "FzTsObjects",
     -- See :h incsearch, move between matches without leaving the cmdline
     cmdline_next = "<c-g>",
     cmdline_prev = "<c-t>",
@@ -64,15 +67,16 @@ local get_match_idx = function(matches, cursor, backward)
   end
   return idx
 end
-local get_matches = function(args, fs_opts)
+local get_matches = function(args, opts)
   local winnr = vim.api.nvim_get_current_win()
   local cursor = vim.api.nvim_win_get_cursor(winnr)
 
-  local words = fs_opts.generator(args, fs_opts)
+  -- TODO: cache generator results -- more important once i start using the lsp
+  local words = opts.generator(args, opts)
 
   local pat = args.args
   local matches = {}
-  local filtered = require("fuzzy_nvim"):filter(pat, words, fs_opts.case_mode)
+  local filtered = require("fuzzy_nvim"):filter(pat, words, opts.case_mode)
   for _, result in ipairs(filtered) do
     local word, positions, score, index = unpack(result)
     -- local min, max = minmax(positions)
@@ -81,7 +85,8 @@ local get_matches = function(args, fs_opts)
     word.index = index
     table.insert(matches, word)
   end
-  table.sort(matches, function(a, b) return fs_opts.sorter(a, b, fs_opts) end)
+
+  table.sort(matches, function(a, b) return opts.sorter(a, b, opts) end)
 
   local idx = get_match_idx(matches, cursor)
 
@@ -91,11 +96,9 @@ end
 local matches = {}
 local match_index = 0
 
-local function highlight_matches(ns, fs_opts)
+local function highlight_matches(ns, opts)
   for i, match in ipairs(matches) do
-    local cursor =
-      fs_opts.highlight_match(match, ns, i == match_index and fs_opts.cursor_hl or fs_opts.hl_group, fs_opts)
-    if i == match_index then fs_opts.jump_to_match(match, fs_opts) end
+    local cursor = opts.highlight_match(match, ns, i == match_index and opts.cursor_hl or opts.hl_group, opts)
   end
 end
 
@@ -126,14 +129,14 @@ local on_key_ns
 local last_args
 local last_last_args
 local last_match_index
-local fuzzy_preview = function(fs_opts)
+local fuzzy_preview = function(opts)
   return function(args, ns, buf)
     if not vim.opt_local.incsearch:get() then return end
-    args.args = args.args:gsub(t("[" .. fs_opts.cmdline_next .. fs_opts.cmdline_prev .. "]"), "")
+    args.args = args.args:gsub(t("[" .. opts.cmdline_next .. opts.cmdline_prev .. "]"), "")
 
     if args.args ~= last_args then
       vim.cmd.nohlsearch()
-      matches, match_index = get_matches(args, fs_opts)
+      matches, match_index = get_matches(args, opts)
 
       on_key_ns = vim.on_key(function(k)
         if vim.api.nvim_get_mode().mode ~= "c" then
@@ -164,7 +167,8 @@ local fuzzy_preview = function(fs_opts)
     end
     last_args = args.args
 
-    highlight_matches(ns, fs_opts)
+    highlight_matches(ns, opts)
+    opts.jump_to_match(matches[match_index], opts)
     -- TODO: render in split buf
 
     return 1
@@ -172,11 +176,11 @@ local fuzzy_preview = function(fs_opts)
 end
 
 local last_finisher
-local fuzzy_finish = function(fs_opts)
+local fuzzy_finish = function(opts)
   local finisher
   finisher = function(args)
     if (not matches or #matches == 0 or args.args ~= last_last_args) and args.args and #args.args > 0 then
-      matches, match_index = get_matches(args, fs_opts)
+      matches, match_index = get_matches(args, opts)
     end
     if #matches == 0 then
       vim.notify("no matches", vim.log.levels.WARN)
@@ -185,43 +189,63 @@ local fuzzy_finish = function(fs_opts)
     if match_index == 0 then match_index = get_match_idx(matches, vim.api.nvim_win_get_cursor(0)) end
 
     local match = matches[match_index]
-    fs_opts.jump_to_match(match, fs_opts)
+    opts.jump_to_match(match, opts)
 
     -- TODO: hlsearch
     if vim.opt_local.hlsearch:get() then
       vim.api.nvim_buf_clear_namespace(0, hlsearch_ns, 0, -1)
-      highlight_matches(hlsearch_ns, fs_opts)
+      highlight_matches(hlsearch_ns, opts)
     end
     last_match_index = match_index
     match_index = 0
 
     -- TODO: repeatable, or just loclist
-    fs_opts.register_nN_repeat { vim.cmd.FzNext, vim.cmd.FzPrev }
+    opts.register_nN_repeat { vim.cmd.FzNext, vim.cmd.FzPrev }
     last_finisher = finisher
   end
   return finisher
 end
 
-M.make_command = function(fs_opts)
-  fs_opts = fs_opts and setmetatable(fs_opts, { __index = M.opts }) or M.opts
-  return fuzzy_finish(fs_opts), {
+M.make_command = function(opts)
+  opts = opts and setmetatable(opts, { __index = M.opts }) or M.opts
+  return fuzzy_finish(opts), {
     nargs = "*",
-    preview = fuzzy_preview(fs_opts),
+    preview = fuzzy_preview(opts),
     range = "%",
   }
 end
 
 M.opts.generator = M.get_all_words_or_lines
 M.opts.jump_to_match = M.jump_to_match
-M.opts.sorter = function(a, b) return a.index < b.index end
+M.opts.sorter = M.sort_by_index
 M.opts.highlight_match = M.highlight_match
 
 M.setup = function(opts)
   if opts then M.opts = setmetatable(opts, { __index = M.opts }) end
 
+  vim.api.nvim_create_user_command(
+    opts.FzTsLocals,
+    M.make_command {
+      generator = M.get_ts_locals,
+    }
+  )
+  vim.api.nvim_create_user_command(
+    opts.FzTsObjects,
+    M.make_command {
+      generator = M.get_ts_textobjects,
+    }
+  )
+  vim.api.nvim_create_user_command(
+    opts.FzDiags,
+    M.make_command {
+      generator = M.get_diagnostic,
+    }
+  )
   vim.api.nvim_create_user_command(M.opts.Fz, M.make_command())
+  local hlsearch_fz = vim.api.nvim_create_augroup("hlsearch_fz", {})
   vim.api.nvim_create_autocmd("OptionSet", {
     pattern = "hlsearch",
+    group = hlsearch_fz,
     callback = function() vim.api.nvim_buf_clear_namespace(0, hlsearch_ns, 0, -1) end,
   })
   -- Repeat
